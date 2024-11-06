@@ -1,0 +1,372 @@
+---
+title: "PDM9 Data Collection Progress"
+author: "Target number of households: 33,420"
+subtitle: "(1.5% data collection)"
+output: pdf_document
+---
+
+```{r}
+# This script is used to create a daily report for the AMF
+# Post Distribution Monitoring at month 9
+```
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(readxl)
+library(dplyr)
+library(ggplot2)
+library(writexl)
+library(knitr)
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+```
+
+
+
+```{r prepare-data, echo=FALSE}
+##############################################################################
+##############################################################################
+#            Prepare data
+##############################################################################
+##############################################################################
+# Load the data
+data_path <- "add path here"
+household_path <- "add path here"
+pdm_data <- read_excel(data_path)
+pdm_hh <- read_excel(household_path)
+
+
+# Copy '2b) Spare household' to '2a) Household' 
+# if '2a) Household' contains 'spare'
+pdm_data <- pdm_data %>%
+  mutate(`2a) Household` = ifelse(`2a) Household` == 'spare',
+                                  `2b) Spare household`, 
+                                  `2a) Household`))
+
+# Sort and remove duplicates
+# Sort by '5. Consent' (keeping 'Yes' first) 
+# and 'Start of Survey' (keeping the most recent date)
+df_deduplicated <- pdm_data %>%
+  arrange(`2a) Household`, 
+          desc(`5. Consent`),
+          desc(`Start of Survey`)) %>%
+  distinct(`2a) Household`, .keep_all = TRUE)
+
+# Extract removed duplicates for review
+# Yse anti_join to find records that were removed
+duplicates_removed <- pdm_data %>%
+  anti_join(df_deduplicated, by = names(pdm_data))
+
+# Save the duplicates_removed data frame to an Excel file
+write_xlsx(duplicates_removed, "pdm9main Duplicates.xlsx")
+
+# create new dataframe called villages
+villages <- pdm_hh %>%
+  select(district, subcounty, parish, village) %>%
+  distinct() %>%
+  arrange()
+
+# Reset the row names (index)
+row.names(villages) <- NULL
+
+
+# Add columns with default values
+villages <- villages %>%
+  mutate(`Households Visited` = 0,
+         `Households Enrolled` = 0,
+         `Spares used` = 0,
+         `Village Status` = 'Pending')
+
+# Calculate statistics for each village
+villages <- villages %>%
+  group_by(district, subcounty, parish, village) %>%
+  mutate(
+    # Calculate Households Visited
+    `Households Visited` = {
+      temp <- df_deduplicated %>%
+        filter(
+          toupper(calc_l4_name) == toupper(district),
+          toupper(calc_l5_name) == toupper(subcounty),
+          toupper(calc_l6_name) == toupper(parish),
+          toupper(calc_village_name) == toupper(village)
+        )
+      sum(
+        (temp$`2a) Household` != 'spare' & !is.na(temp$`2a) Household`)) |
+          !is.na(temp$`2b) Spare household`)
+      )
+    },
+    
+    # Calculate Households Enrolled
+    `Households Enrolled` = {
+      df_deduplicated %>%
+        filter(
+          toupper(calc_l4_name) == toupper(district),
+          toupper(calc_l5_name) == toupper(subcounty),
+          toupper(calc_l6_name) == toupper(parish),
+          toupper(calc_village_name) == toupper(village),
+          `5. Consent` == 'Yes'
+        ) %>%
+        nrow()
+    },
+    
+    # Calculate Spares Used
+    `Spares used` = {
+      df_deduplicated %>%
+        filter(
+          toupper(calc_l4_name) == toupper(district),
+          toupper(calc_l5_name) == toupper(subcounty),
+          toupper(calc_l6_name) == toupper(parish),
+          toupper(calc_village_name) == toupper(village),
+          `calc_spare_household_display_number` == 'Spare'
+        ) %>%
+        nrow()
+    }
+  ) %>%
+  ungroup() %>%
+  mutate(
+    # Determine Village Status
+    `Village Status` = case_when(
+      `Households Enrolled` == 20 ~ 'Completed',
+      `Households Enrolled` > 0 & `Households Enrolled` < 20 ~ 'Partial',
+      `Households Enrolled` > 20 ~ 'Too many households',
+      TRUE ~ NA_character_
+    )
+  )
+
+# Update 'Village Status' to 'Pending' where it is NA
+villages <- villages %>%
+  mutate(`Village Status` = ifelse(is.na(`Village Status`), 
+                                   'Pending', 
+                                   `Village Status`))
+
+# Save the results to Excel
+write_xlsx(villages, "pdm9main Village Status.xlsx")
+
+# Count the number of villages in each category
+status_counts <- villages %>%
+  count(`Village Status`)
+```
+
+
+
+```{r totnum}
+##############################################################################
+##############################################################################
+#            Total households completed
+##############################################################################
+##############################################################################
+# Calculate the count of completed households
+total_completed_hh <- df_deduplicated %>%
+  filter(`5. Consent` == 'Yes') %>%
+  nrow()
+# Calculate the percentage and format it to one decimal place
+percentage_completed <- (total_completed_hh / 33420) * 100
+# Print number/percentage of completed households
+cat(sprintf("The total number of households completed is: %d (%.1f%%)", 
+            total_completed_hh,
+            percentage_completed))
+cat("Number of duplicated households removed:", 
+    nrow(duplicates_removed), "\n")
+```
+
+
+
+```{r target_actual}
+##############################################################################
+##############################################################################
+#     Comparison of Target vs. Actual Households Completed per Day
+##############################################################################
+##############################################################################
+# Make a copy of df_deduplicated
+df_deduplicated_copy <- df_deduplicated
+
+# Ensure the 'Start of Survey' column is in Date format 
+# and filter completed households
+df_deduplicated_copy <- df_deduplicated_copy %>%
+  mutate(`Start of Survey` = as.Date(`Start of Survey`)) %>%
+  filter(`5. Consent` == 'Yes')
+
+# Get the count of completed households per day
+completed_per_day <- df_deduplicated_copy %>%
+  group_by(`Start of Survey`) %>%
+  summarise(Completed = n()) %>%
+  ungroup()
+
+# Combine totals for Day 1 and Day 2, shift subsequent days by 1, 
+#a nd calculate cumulative totals
+completed_per_day <- completed_per_day %>%
+  mutate(Day = paste0("Day ", row_number())) %>%  # Original day labels
+  mutate(Day_num = row_number()) %>%
+  # Combine Day 1 and Day 2 and shift subsequent days by 1
+  mutate(Day_num = ifelse(Day_num == 2, 1, ifelse(Day_num > 2, 
+                                                  Day_num - 1, 
+                                                  Day_num))) %>%
+  group_by(Day_num) %>%
+  summarise(
+    Completed = sum(Completed),  # Sum for combined Day 1
+    Start_of_Survey = min(`Start of Survey`)  # Keep the earliest date 
+  ) %>%
+  ungroup() %>%
+  arrange(Day_num) %>%  # Ensure days are in order
+  mutate(
+    Cumulative_Completed = cumsum(Completed),  # Calculate cumulative totals
+    Day = paste0("Day ", Day_num)  # Generate day labels
+  )
+
+# Create progress line data
+progress_data <- data.frame(
+  Day_num = 1:10,
+  Progress = seq(3342, 33420, length.out = 10)
+)
+
+# Plot the actual vs target data points
+ggplot() +
+  # Progress line (gradual increase from day 1 to day 10)
+  geom_line(data = progress_data, aes(x = Day_num, 
+                                      y = Progress, 
+                                      color = "Target"), 
+            linetype = "dashed", size = 1) +
+  # Actual completed households line
+  geom_line(data = completed_per_day, aes(x = Day_num, 
+                                          y = Cumulative_Completed, 
+                                          color = "Actual"), size = 1) +
+  geom_point(data = completed_per_day, aes(x = Day_num, 
+                                           y = Cumulative_Completed, 
+                                           color = "Actual")) +
+  # Labels and title
+  labs(title = "Comparison of Target vs. Actual Households Completed per Day",
+       x = "Survey Day",
+       y = "Number of Households Completed",
+       color = "Legend") +
+  # Customizing x-axis labels
+  scale_x_continuous(breaks = 1:10, labels = paste0("Day ", 1:10)) +
+  # Defining colors for the legend
+  scale_color_manual(values = c("Target" = "red", "Actual" = "blue")) +
+  # Adjust legend text size
+  theme_minimal() +
+  theme(
+    legend.text = element_text(size = 12),     # Increase the legend text size
+    legend.title = element_text(size = 14)     # Increase the legend title size
+  )
+```
+
+
+
+```{r numhhperday, fig.height=4}
+##############################################################################
+##############################################################################
+#            Total households completed per day
+##############################################################################
+##############################################################################
+ggplot(completed_per_day, aes(x = Day, y = Completed)) +
+  geom_bar(stat = "identity", fill = "#4C72B0") +
+  labs(title = "Number of Households Completed per Day",
+       x = "Survey Day",
+       y = "Number of Households Completed") +
+  geom_text(aes(label = Completed), vjust = -0.3) + 
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+
+```{r village_status}
+##############################################################################
+##############################################################################
+#            Total villages by status
+##############################################################################
+##############################################################################
+ggplot(status_counts, aes(x = `Village Status`, 
+                          y = n, 
+                          fill = `Village Status`)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = n), vjust = -0.5) +  # Add labels on top of each bar
+  labs(title = "Total Villages by Status", 
+       x = "Village Status", 
+       y = "Number of Villages") +
+  theme_minimal()
+```
+
+
+
+```{r households_completed, fig.height=8}
+##############################################################################
+##############################################################################
+#            Households completed by district
+##############################################################################
+##############################################################################
+# Add Expected Households column to villages table
+villages <- villages %>%
+  mutate(`Expected Households` = 20)
+# Calculate district totals and percentage complete
+district_totals <- villages %>%
+  group_by(district) %>%
+  summarise(
+    `Households Enrolled` = sum(`Households Enrolled`),
+    `Expected Households` = sum(`Expected Households`)
+  ) %>%
+  mutate(
+    `Percentage Complete` = 
+      (`Households Enrolled` / `Expected Households`) * 100) %>%
+  arrange(desc(`Percentage Complete`))
+# Create horizontal bar chart
+ggplot(district_totals, aes(x = `Percentage Complete`, 
+                            y = reorder(district, `Percentage Complete`))) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  geom_text(aes(label = sprintf("%.1f%%", `Percentage Complete`)),
+            hjust = -0.2) +
+  scale_x_continuous(limits = c(0, 100)) +
+  labs(
+    title = "Percentage of Households Completed by District",
+    x = "Percentage Complete",
+    y = "District"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    panel.grid.major.y = element_blank()
+  )
+```
+
+
+\newpage
+## Phone numbers
+
+```{r phone_numbers}
+##############################################################################
+##############################################################################
+#            Number of unique phone numbers
+##############################################################################
+##############################################################################
+# Get number of unique phone numbers
+unique_phone_numbers <- df_deduplicated %>%
+  filter(`5. Consent` == 'Yes') %>%  # Filter rows where '5. Consent' is 'Yes'
+  group_by(`Enumerator Phone Number`) %>%
+  summarise(`Total Households` = n()) %>%
+  arrange(`Enumerator Phone Number`)
+
+num_unique_phone_nums <- nrow(unique_phone_numbers)
+
+# Summarize data by enumerator's phone number
+enumerator_summary <- df_deduplicated %>%
+  filter(`5. Consent` == 'Yes') %>%  # Filter rows where '5. Consent' is 'Yes'
+  group_by(`Enumerator Phone Number`,
+           `Enumerator User Name`,
+           `calc_l4_name`) %>%
+  summarise(`Total Households` = n(), .groups = "drop") %>% 
+  rename(`District` = `calc_l4_name`, 
+         `Phone Number` = `Enumerator Phone Number`,
+         `Name` = `Enumerator User Name`) %>%
+  arrange(`Phone Number`)
+
+# Print the number of unique phone numbers
+cat("Total number of unique phone numbers is", num_unique_phone_nums, "\n")
+
+# Display the table
+kable(enumerator_summary)
+```
+
+
+
+
+
