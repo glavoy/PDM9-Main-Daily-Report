@@ -1,8 +1,11 @@
 ---
 title: "PDM9 Data Collection Progress"
-author: "Target number of households: 33,420"
-subtitle: "(1.5% data collection)"
-output: pdf_document
+author: 'Target number of households: 33,420'
+subtitle: (1.5% data collection)
+output:
+  html_document:
+    df_print: paged
+  # pdf_document: default
 ---
 
 
@@ -19,7 +22,7 @@ knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
 
 
 
-```{r prepare-data, echo=FALSE}
+```{r prepare_data, echo=FALSE}
 ##############################################################################
 ##############################################################################
 #            Prepare data
@@ -121,18 +124,69 @@ villages <- villages %>%
   mutate(
     # Determine Village Status
     `Village Status` = case_when(
-      `Households Enrolled` == 20 ~ 'Completed',
-      `Households Enrolled` > 0 & `Households Enrolled` < 20 ~ 'Partial',
+      (`Households Enrolled` == 20) |
+      (`Households Visited` == 27 & `Spares used` == 7) |
+      (`Households Visited` + `Households Enrolled` == 27 & 
+         `Spares used` == 7) ~ 'Completed',
+      
+      `Households Enrolled` > 0 & 
+        `Households Enrolled` < 20 ~ 'Partial - To be completed',
       `Households Enrolled` > 20 ~ 'Too many households',
       TRUE ~ NA_character_
     )
   )
 
+
 # Update 'Village Status' to 'Pending' where it is NA
 villages <- villages %>%
-  mutate(`Village Status` = ifelse(is.na(`Village Status`), 
-                                   'Pending', 
+  mutate(`Village Status` = ifelse(is.na(`Village Status`),
+                                   'Pending',
                                    `Village Status`))
+
+# Get villages that can't be completed
+cant_complete_village <- read.csv("cant_complete_village.csv")
+
+# Update 'Village Status' in 'villages' only for rows that have a match 
+# in 'cant_complete_village' # Create unique keys in both dataframes 
+# for case-insensitive matching
+villages <- villages %>%
+  mutate(key = paste(tolower(trimws(district)),
+                     tolower(trimws(subcounty)),
+                     tolower(trimws(parish)),
+                     tolower(trimws(village)), sep = "|"))
+
+cant_complete_village <- cant_complete_village %>%
+  mutate(key = paste(tolower(trimws(district)),
+                     tolower(trimws(subcounty)),
+                     tolower(trimws(parish)),
+                     tolower(trimws(village)), sep = "|"))
+
+# Identify matching keys from cant_complete_village
+matching_keys <- cant_complete_village$key
+
+# Update 'Village Status' in villages based on matching keys
+villages <- villages %>%
+  mutate(`Village Status` = ifelse(key %in% matching_keys, 
+                                   "Partial - Can't be completed", 
+                                   `Village Status`)) %>%
+  select(-key)  # Remove the temporary key column
+
+# Create Villages of Concern spreadsheet.
+villages_of_concern <- villages %>%
+  filter(
+    `Village Status` == 'Partial - To be completed' &
+    (
+      `Households Enrolled` == 18 |
+      `Households Enrolled` == 19 |
+      (`Households Enrolled` == 17 & `Spares used` > 0) |
+      (`Households Enrolled` == 16 & `Spares used` > 1) |
+      (`Households Enrolled` == 15 & `Spares used` > 2)
+    )
+  )
+
+# Export to an Excel file
+write_xlsx(villages_of_concern, "Villages of Concern.xlsx")
+
 
 # Save the results to Excel
 write_xlsx(villages, "pdm9main Village Status.xlsx")
@@ -156,16 +210,30 @@ total_completed_hh <- df_deduplicated %>%
   nrow()
 # Calculate the percentage and format it to one decimal place
 percentage_completed <- (total_completed_hh / 33420) * 100
+
+# Calculate number of hh's seen but not enrolled/completed
+total_not_completed_hh <- sum(is.na(df_deduplicated$`5. Consent`) | 
+                       df_deduplicated$`5. Consent` != "Yes")
+
 # Print number/percentage of completed households
 cat(sprintf("The total number of households completed is: %d (%.1f%%)", 
             total_completed_hh,
             percentage_completed))
+cat(sprintf("Number of households found, but not enrolled/completed: %d", 
+            total_not_completed_hh))
 cat("Number of duplicated households removed:", 
-    nrow(duplicates_removed), "\n")
+    nrow(duplicates_removed))
+
+num_villages_cant_complete <- nrow(cant_complete_village)
+
+# Print the number of villages that can't be completed
+cat("Number of villages that can't be completed:",
+    num_villages_cant_complete,
+    "\n")
 ```
 
 
-
+<br><br><br>
 ```{r target_actual}
 ##############################################################################
 ##############################################################################
@@ -213,7 +281,6 @@ progress_data <- data.frame(
   Day_num = 1:10,
   Progress = seq(3342, 33420, length.out = 10)
 )
-
 # Plot the actual vs target data points
 ggplot() +
   # Progress line (gradual increase from day 1 to day 10)
@@ -246,7 +313,7 @@ ggplot() +
 ```
 
 
-
+<br><br><br>
 ```{r numhhperday, fig.height=4}
 ##############################################################################
 ##############################################################################
@@ -264,8 +331,8 @@ ggplot(completed_per_day, aes(x = Day, y = Completed)) +
 ```
 
 
-
-```{r village_status}
+<br><br><br>
+```{r village_status, fig.height=6}
 ##############################################################################
 ##############################################################################
 #            Total villages by status
@@ -279,11 +346,31 @@ ggplot(status_counts, aes(x = `Village Status`,
   labs(title = "Total Villages by Status", 
        x = "Village Status", 
        y = "Number of Villages") +
-  theme_minimal()
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
 ```
 
 
+<br><br><br>
+<h2>Villages that can't be completed</h2>
+```{r villages_cant_complete}
+##############################################################################
+##############################################################################
+#            Number of unique phone numbers
+##############################################################################
+##############################################################################
+# Remove the 'key' column from the cant_complete_village dataframe
+cant_complete_village <- cant_complete_village %>%
+  select(-key)
+ 
+num_villages_cant_complete <- nrow(cant_complete_village)
 
+# Display the table
+kable(cant_complete_village)
+```
+
+
+<br><br><br>
 ```{r households_completed, fig.height=8}
 ##############################################################################
 ##############################################################################
@@ -323,10 +410,9 @@ ggplot(district_totals, aes(x = `Percentage Complete`,
   )
 ```
 
-
+<br><br><br>
 \newpage
-## Phone numbers
-
+<h2>Phone numbers</h2>
 ```{r phone_numbers}
 ##############################################################################
 ##############################################################################
@@ -360,6 +446,57 @@ cat("Total number of unique phone numbers is", num_unique_phone_nums, "\n")
 # Display the table
 kable(enumerator_summary)
 ```
+
+
+
+```{r time_diff}
+##############################################################################
+##############################################################################
+#    Create report for time diff from first hh to last hh for the day
+##############################################################################
+##############################################################################
+# Extract date without time for grouping purposes
+pdm_data_time <- df_deduplicated %>%
+  mutate(Date = as.Date(`Start of Survey`)) %>%
+  filter(`5. Consent` == 'Yes')
+
+# Create a report dataframe with unique combinations of Date and Device ID, 
+# including a count of entries
+report <- pdm_data_time %>%
+  group_by(Date, `Device ID`) %>%
+  summarise(total_entries = n(), .groups = 'drop')
+
+# Initialize columns for min_start_time, max_start_time, and time_difference
+report <- report %>%
+  mutate(
+    min_start_time = as.POSIXct(NA),
+    max_start_time = as.POSIXct(NA),
+    time_difference = NA_real_
+  )
+
+# SLoop through each row in report and calculate min, max, and time difference
+for (i in 1:nrow(report)) {
+  # Filter the original data to match the current Date and Device ID
+  temp_data <- pdm_data %>%
+    filter(Date == report$Date[i], `Device ID` == report$`Device ID`[i])
+  
+  # Calculate min, max, and time difference for each group
+  report$min_start_time[i] <- min(temp_data$`Start of Survey`)
+  report$max_start_time[i] <- max(temp_data$`Start of Survey`)
+  report$time_difference[i] <- as.numeric(difftime(report$max_start_time[i], 
+                                                   report$min_start_time[i], 
+                                                   units = "mins"))
+}
+
+# Order the report dataframe by time_difference
+report <- report %>%
+  arrange(ime_difference)
+
+# Save the report dataframe to an Excel file
+write_xlsx(report, "report_sorted_by_date_and_time_difference.xlsx")
+```
+
+
 
 
 
